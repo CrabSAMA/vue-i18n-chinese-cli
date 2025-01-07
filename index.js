@@ -9,6 +9,9 @@ import {
 import path from 'path'
 import { access, constants } from 'fs/promises'
 
+import { splitJSON, mergeJSON } from './translateJsonHandler.js'
+import { translateRequest } from './bigmodel.js'
+
 ;(async function main() {
   const projectPath = process.argv[2]
   if (!projectPath) {
@@ -34,32 +37,33 @@ import { access, constants } from 'fs/promises'
     const languageGroupingMissingKeys = missingKeys.reduce((acc, item) => {
       const { language } = item;
       if (!acc[language]) {
-        acc[language] = [];
+        acc[language] = new Set();
       }
-      acc[language].push({
-        key: item.path,
-        value: ''
-      });
+      acc[language].add(item.path);
       return acc;
     }, {});
 
-    if (languageGroupingMissingKeys['zh-CN']) {
-      languageGroupingMissingKeys['zh-CN'].forEach((item) => item.value = item.key)
+    const translateData = {}
+    for (let langKey in languageGroupingMissingKeys) {
+      translateData[langKey] = [...languageGroupingMissingKeys[langKey]].map((path) => ({
+        key: path,
+        value: ''
+      }))
+    }
+    if (translateData['zh-CN']) {
+      translateData['zh-CN'].forEach((item) => item.value = item.key)
     }
 
-    if (languageGroupingMissingKeys['en']) {
-      languageGroupingMissingKeys['zh-CN'].forEach((item) => {
-        // TODO item.key translate
-        item.value = item.key
-      })
-
+    if (translateData['en']) {
+      const split = splitJSON(translateData['en'], 500)
+      const answer = await translateRequest(split[0])
+      console.log(answer);
     }
 
-    console.log(languageGroupingMissingKeys);
     
     
   } catch (error) {
-    console.error(error)
+    console.error(error.response.data)
   }
 })()
 
