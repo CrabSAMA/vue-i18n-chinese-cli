@@ -7,13 +7,33 @@ import {
   extractI18NReport,
 } from 'vue-i18n-extract/dist/vue-i18n-extract.modern.mjs'
 import path from 'path'
-import { access, constants } from 'fs/promises'
-
-import { splitJSON, mergeJSON } from './translateJsonHandler.js'
+import { access, constants, writeFile } from 'fs/promises'
+import ora from 'ora'
+import { splitJSON } from './translateJsonHandler.js'
 import { translateRequest } from './bigmodel.js'
 
-;(async function main() {
-  const projectPath = process.argv[2]
+function getVueI18NReport(projectPath) {
+  const vueFilesGlob = path.resolve(projectPath, 'src', '**/*.?(js|ts|vue)')
+  const languageFilesGlob = path.resolve(
+    projectPath,
+    'src/{locale,locales,lang,langs}',
+    '**/*.?(json|yml|yaml)'
+  )
+
+  const vueFiles = readVueFiles(path.resolve(process.cwd(), vueFilesGlob))
+  const languageFiles = readLanguageFiles(
+    path.resolve(process.cwd(), languageFilesGlob)
+  )
+  const I18NItems = extractI18NItemsFromVueFiles(vueFiles)
+  const I18NLanguage = extractI18NLanguageFromLanguageFiles(languageFiles)
+  const report = extractI18NReport(I18NItems, I18NLanguage)
+
+  return report
+}
+
+async function main() {
+  // 接受传参，如果不传参的话就取当前目录执行
+  const projectPath = process.argv[2] || '.'
   if (!projectPath) {
     throw new Error('Please provide a project path')
   }
@@ -35,53 +55,64 @@ import { translateRequest } from './bigmodel.js'
 
     // 遍历数组，根据语言属性进行分组
     const languageGroupingMissingKeys = missingKeys.reduce((acc, item) => {
-      const { language } = item;
+      const { language } = item
       if (!acc[language]) {
-        acc[language] = new Set();
+        acc[language] = new Set()
       }
-      acc[language].add(item.path);
-      return acc;
-    }, {});
+      acc[language].add(item.path)
+      return acc
+    }, {})
 
-    const translateData = {}
     for (let langKey in languageGroupingMissingKeys) {
-      translateData[langKey] = [...languageGroupingMissingKeys[langKey]].map((path) => ({
-        key: path,
-        value: ''
-      }))
-    }
-    if (translateData['zh-CN']) {
-      translateData['zh-CN'].forEach((item) => item.value = item.key)
+      // Set -> Array
+      languageGroupingMissingKeys[langKey] = Array.from(
+        languageGroupingMissingKeys[langKey]
+      )
     }
 
-    if (translateData['en']) {
-      const split = splitJSON(translateData['en'], 500)
-      const answer = await translateRequest(split[0])
-      console.log(answer);
+    // translateData 即最终输出的 i18n JSON
+    const translateData = {}
+
+    // 初始化 i18n JSON 格式
+    for (let langKey in languageGroupingMissingKeys) {
+      translateData[langKey] = languageGroupingMissingKeys[langKey].reduce((acc, path) => {
+        // 中文 i18n JSON 直接使用 path 作为 value 值
+        acc[path] = langKey === 'zh-CN' ? path : ''
+        return acc
+      }, {})
     }
 
-    
-    
+    // 英文 i18n JSON 使用大模型进行翻译
+    if (languageGroupingMissingKeys['en']) {
+      // 由于 token 限制，使用 splitJSON 进行切分
+      const split = splitJSON(languageGroupingMissingKeys['en'], 800)
+
+      const spinner = ora('翻译中……').start();
+
+      const answerList = []
+      // 遍历切割后的 JSON
+      for (const item of split) {
+        const answer = await translateRequest(item)
+        const obj = JSON.parse(answer)
+        answerList.push(...obj)
+      }
+      // translateData['en'] 是一个对象
+      // Object.keys(translateData['en']) 和 answerList 数组长度一致，直接遍历使用 index 取值与赋值
+      Object.keys(translateData['en']).forEach((key, index) => {
+        translateData['en'][key] = answerList[index]
+      })
+
+      spinner.succeed('翻译成功')
+
+      // 文件输出
+      for (const langKey in translateData) {
+        const json = JSON.stringify(translateData[langKey], null, 2)
+        writeFile(`./${langKey}.json`, json)
+      }
+    }
   } catch (error) {
-    console.error(error.response.data)
+    throw error
   }
-})()
-
-function getVueI18NReport(projectPath) {
-  const vueFilesGlob = path.resolve(projectPath, 'src', '**/*.?(js|ts|vue)')
-  const languageFilesGlob = path.resolve(
-    projectPath,
-    'src/{locale,locales,lang,langs}',
-    '**/*.?(json|yml|yaml)'
-  )
-
-  const vueFiles = readVueFiles(path.resolve(process.cwd(), vueFilesGlob))
-  const languageFiles = readLanguageFiles(
-    path.resolve(process.cwd(), languageFilesGlob)
-  )
-  const I18NItems = extractI18NItemsFromVueFiles(vueFiles)
-  const I18NLanguage = extractI18NLanguageFromLanguageFiles(languageFiles)
-  const report = extractI18NReport(I18NItems, I18NLanguage)
-
-  return report
 }
+
+main()
